@@ -1,25 +1,18 @@
-# Autogestión Tigo - versión ajustada WhatsApp
+# WhatsApp Objetivos Tigo
 
-Corrección aplicada:
+Proyecto independiente para evitar conflictos con otros módulos.
 
-- Módulo WhatsApp vuelve a mostrar ranking contra objetivo.
-- Crosselling queda separado y no suma al objetivo.
-- Mensaje por socio con formato:
-  - Ventas objetivo
-  - Crosselling
-  - Total ventas
-  - Objetivo
-  - Cumplimiento
-  - Faltan
-  - Códigos que cuentan al objetivo
-- Opción para generar mensajes separados por socio.
-
-Archivos que debes reemplazar en GitHub dentro de la carpeta `proyecto_autogestion_tigo_nuevo/`:
-
+## Archivos
 - app.py
 - requirements.txt
 - README.md
 
-La ruta en Streamlit debe seguir siendo:
+## Uso
+1. Subir base de ventas Grossadd/Crosselling.
+2. Subir Objetivo.xlsx.
+3. Usar Dashboard o WhatsApp.
 
-`proyecto_autogestion_tigo_nuevo/app.py`
+## Reglas
+- Crosselling no suma al objetivo.
+- Ventas objetivo = ventas que no son crosselling.
+- Objetivo se toma desde Objetivo.xlsx: POS_CODE = EH, POS_OWNER = Socio, BU JUNIO = Objetivo.
