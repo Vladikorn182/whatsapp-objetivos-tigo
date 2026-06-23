@@ -1,8 +1,0 @@
-1. Crear repositorio nuevo en GitHub: whatsapp-objetivos-tigo
-2. Subir estos archivos directamente a la raíz:
-   - app.py
-   - requirements.txt
-   - README.md
-3. En Streamlit Cloud crear app nueva.
-4. Main file path: app.py
-5. Deploy.
