@@ -441,8 +441,7 @@ def cargar_datos() -> tuple[pd.DataFrame, pd.DataFrame | None, pd.DataFrame, set
     detectar_cross_tipo = st.sidebar.checkbox("Detectar CROSS_SELLING por TIPO_VENTA", value=True, key="detectar_cross_tipo")
     with st.sidebar.expander("Configurar crosselling", expanded=True):
         st.caption("El crosselling aparece en el reporte, pero NO suma al objetivo de ventas nuevas.")
-        texto_cross = st.text_area("Pegar códigos crosselling", height=100, key="texto_cross_manual", placeholder="2671233
-2674567")
+        texto_cross = st.text_area("Pegar códigos crosselling", height=100, key="texto_cross_manual", placeholder="2671233\n2674567")
         archivo_cross = st.file_uploader("Subir archivo con códigos crosselling", type=["csv", "xlsx", "xls"], key="archivo_cross_manual")
         codigo_cross_desde = st.text_input("Desde este código considerar crosselling", key="codigo_cross_desde", placeholder="Ej.: 2680000")
         st.caption("Úsalo solo si desde cierto código en adelante todos deben tratarse como crosselling.")
