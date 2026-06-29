@@ -1,23 +1,28 @@
-# Operaciones Tigo V2
+# WhatsApp Objetivos Tigo - V3
 
-Proyecto independiente para:
+Proyecto independiente para Dashboard, Ranking y mensajes WhatsApp por socio.
 
-- Agenda Técnica
-- Pendientes de Instalación CON PAGO y SIN PAGO
-- Pendientes Pago
-- Suspendidas
+## Cambios V3
 
-## Actualización
-El módulo Pendientes de Instalación ahora acepta archivos:
+- Crosselling separado del objetivo.
+- Detección automática por `TIPO_VENTA = CROSS_SELLING`.
+- Carga manual de códigos crosselling pegando códigos.
+- Carga de archivo con códigos crosselling.
+- Opción "Desde este código considerar crosselling".
+- El mensaje cambia correctamente al seleccionar socio.
+- Detalle de ventas debajo del mensaje WhatsApp.
+- Ranking con ventas objetivo, crosselling, total, objetivo, cumplimiento y faltantes.
 
-- PENDIENTE_INST_CON_PAGO
-- PENDIENTE_INST_SIN_PAGO
+## Archivos necesarios
 
-Filtra casos antiguos de +3 días por FECHA_GENERACION_OT y genera mensaje WhatsApp con:
-
-- Código
-- Nodo
-- Fecha
+- `app.py`
+- `requirements.txt`
+- `README.md`
 
 ## Streamlit
-Main file path: app.py
+
+Main file path:
+
+```text
+app.py
+```
