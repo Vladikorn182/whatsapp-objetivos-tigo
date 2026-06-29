@@ -1,0 +1,5 @@
+1. En GitHub abre el repositorio operaciones-tigo.
+2. Presiona Add file > Upload files.
+3. Sube/reemplaza app.py, requirements.txt y README.md.
+4. Commit changes.
+5. En Streamlit Cloud: Manage app > Reboot app.

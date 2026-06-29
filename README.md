@@ -1,18 +1,23 @@
-# WhatsApp Objetivos Tigo
+# Operaciones Tigo V2
 
-Proyecto independiente para evitar conflictos con otros módulos.
+Proyecto independiente para:
 
-## Archivos
-- app.py
-- requirements.txt
-- README.md
+- Agenda Técnica
+- Pendientes de Instalación CON PAGO y SIN PAGO
+- Pendientes Pago
+- Suspendidas
 
-## Uso
-1. Subir base de ventas Grossadd/Crosselling.
-2. Subir Objetivo.xlsx.
-3. Usar Dashboard o WhatsApp.
+## Actualización
+El módulo Pendientes de Instalación ahora acepta archivos:
 
-## Reglas
-- Crosselling no suma al objetivo.
-- Ventas objetivo = ventas que no son crosselling.
-- Objetivo se toma desde Objetivo.xlsx: POS_CODE = EH, POS_OWNER = Socio, BU JUNIO = Objetivo.
+- PENDIENTE_INST_CON_PAGO
+- PENDIENTE_INST_SIN_PAGO
+
+Filtra casos antiguos de +3 días por FECHA_GENERACION_OT y genera mensaje WhatsApp con:
+
+- Código
+- Nodo
+- Fecha
+
+## Streamlit
+Main file path: app.py
