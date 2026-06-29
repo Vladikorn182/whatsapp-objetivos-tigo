@@ -1,21 +1,28 @@
-# Operaciones Tigo - V6
+# WhatsApp Objetivos Tigo - V3
 
-Incluye módulos:
+Proyecto independiente para Dashboard, Ranking y mensajes WhatsApp por socio.
 
-- Agenda Técnica
-- Pendientes de Instalación
-- Pendientes Pago
-- Suspendidas
-- Códigos Anulados
+## Cambios V3
 
-## Nueva consulta: Códigos Anulados
-Carga archivo GENERADAS o similar y extrae:
+- Crosselling separado del objetivo.
+- Detección automática por `TIPO_VENTA = CROSS_SELLING`.
+- Carga manual de códigos crosselling pegando códigos.
+- Carga de archivo con códigos crosselling.
+- Opción "Desde este código considerar crosselling".
+- El mensaje cambia correctamente al seleccionar socio.
+- Detalle de ventas debajo del mensaje WhatsApp.
+- Ranking con ventas objetivo, crosselling, total, objetivo, cumplimiento y faltantes.
 
-- Código anulado
-- Fecha
-- Motivo
-- Código relacionado
-- Nodo
-- EH / Socio si existen
+## Archivos necesarios
 
-Subir a GitHub reemplazando app.py, requirements.txt y README.md.
+- `app.py`
+- `requirements.txt`
+- `README.md`
+
+## Streamlit
+
+Main file path:
+
+```text
+app.py
+```
