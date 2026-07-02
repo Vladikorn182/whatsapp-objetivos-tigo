@@ -1,21 +1,18 @@
-# Operaciones Tigo - V6
+# WhatsApp Objetivos Tigo - V9
 
-Incluye módulos:
+Dashboard corregido para ranking comercial.
 
-- Agenda Técnica
-- Pendientes de Instalación
-- Pendientes Pago
-- Suspendidas
-- Códigos Anulados
+## Regla principal
 
-## Nueva consulta: Códigos Anulados
-Carga archivo GENERADAS o similar y extrae:
+- `TIPO_VENTA = GROSSADD` cuenta como venta nueva y suma al ranking/objetivo.
+- `TIPO_VENTA = CROSS_SELLING` cuenta como crosselling y no suma al ranking/objetivo.
 
-- Código anulado
-- Fecha
-- Motivo
-- Código relacionado
-- Nodo
-- EH / Socio si existen
+## Dashboard
 
-Subir a GitHub reemplazando app.py, requirements.txt y README.md.
+- Top 5 socios con más ventas nuevas.
+- El primer lugar se define por cantidad de ventas, no por porcentaje de cumplimiento.
+- Crosselling separado.
+- Reconocimientos para socios que superaron objetivo.
+- Top crosselling.
+- Recomendaciones para socios pendientes.
+- Botones de WhatsApp.
