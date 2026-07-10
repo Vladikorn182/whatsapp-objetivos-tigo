@@ -1,6 +1,6 @@
 # app.py
-# WhatsApp Objetivos Tigo - V10
-# Ranking de Ventas Top 5 por GROSSADD, crosselling automático por TIPO_VENTA y mensajes WhatsApp.
+# Proyecto independiente: WhatsApp + Dashboard de avance a objetivo
+# V4: ranking motivacional con podio, colores, semáforo, retos y WhatsApp por socio.
 
 from __future__ import annotations
 
@@ -38,7 +38,10 @@ def sin_tildes(valor: object) -> str:
 
 def normalizar_columna(columna: object) -> str:
     texto = sin_tildes(columna).strip().lower()
-    for a, b in {" ": "_", "-": "_", "/": "_", ".": "_", "(": "", ")": "", "#": "", ":": ""}.items():
+    reemplazos = {
+        " ": "_", "-": "_", "/": "_", ".": "_", "(": "", ")": "", "#": "", ":": "",
+    }
+    for a, b in reemplazos.items():
         texto = texto.replace(a, b)
     texto = re.sub(r"_+", "_", texto)
     return texto.strip("_")
@@ -80,8 +83,7 @@ def limpiar_eh(valor: object) -> str:
 def limpiar_texto(valor: object) -> str:
     if valor is None or pd.isna(valor):
         return ""
-    texto = str(valor).strip()
-    return "" if texto.lower() == "nan" else texto
+    return str(valor).strip()
 
 
 def leer_archivo(archivo) -> pd.DataFrame:
@@ -111,14 +113,7 @@ def whatsapp_link(texto: str) -> str:
     return "https://wa.me/?text=" + quote(texto)
 
 
-def key_mensaje(prefix: str, texto: str) -> str:
-    digest = hashlib.md5(texto.encode("utf-8", errors="ignore")).hexdigest()[:10]
-    safe = re.sub(r"[^A-Za-z0-9_]+", "_", prefix)[:40]
-    return f"msg_{safe}_{digest}"
-
-
 def excel_bytes(hojas: dict[str, pd.DataFrame]) -> BytesIO:
-    """Exportación simple de respaldo."""
     salida = BytesIO()
     with pd.ExcelWriter(salida, engine="openpyxl") as writer:
         for nombre, df in hojas.items():
@@ -133,338 +128,72 @@ def excel_bytes(hojas: dict[str, pd.DataFrame]) -> BytesIO:
     return salida
 
 
-def observacion_resumen(row: pd.Series) -> str:
-    ventas = int(row.get("Ventas objetivo", 0) or 0)
-    objetivo = int(row.get("Objetivo", 0) or 0)
-    cross = int(row.get("Crosselling", 0) or 0)
-    faltan = int(row.get("Faltan", 0) or 0)
-    if objetivo > 0 and ventas >= objetivo:
-        return "Objetivo cumplido"
-    if objetivo > 0 and faltan <= 3:
-        return "Cerca de cumplir"
-    if cross > ventas and cross > 0:
-        return "Revisar enfoque: alto crosselling"
-    if ventas > 0:
-        return "En seguimiento"
-    return "Sin ventas objetivo"
-
-
-def _ventas_para_reporte(ventas: pd.DataFrame, mascara: pd.Series | None = None) -> pd.DataFrame:
-    if ventas.empty:
-        return pd.DataFrame(columns=["N°", "Código cliente", "EH", "Socio", "Tipo venta", "Nodo", "Fecha", "Cliente", "Teléfono 1", "Teléfono 2"])
-    df = ventas.copy()
-    if mascara is not None:
-        df = df[mascara].copy()
-    df = df.sort_values(["Fecha orden", "Código cliente"], ascending=[True, True]).copy()
-    salida = pd.DataFrame({
-        "N°": range(1, len(df) + 1),
-        "Código cliente": df.get("Código cliente", ""),
-        "EH": df.get("EH", ""),
-        "Socio": df.get("Socio", ""),
-        "Tipo venta": df.get("Tipo venta", ""),
-        "Nodo": df.get("Nodo", ""),
-        "Fecha": df.get("Fecha texto", ""),
-        "Cliente": df.get("Cliente", ""),
-        "Teléfono 1": df.get("Teléfono 1", ""),
-        "Teléfono 2": df.get("Teléfono 2", ""),
-    })
-    return salida
-
-
-def _resumen_nodos_para_reporte(ventas: pd.DataFrame) -> pd.DataFrame:
-    if ventas.empty:
-        return pd.DataFrame(columns=["Ranking", "Nodo", "Ventas objetivo", "Crosselling", "Total gestiones"])
-    base = ventas.copy()
-    resumen_nodos = base.groupby("Nodo", as_index=False).agg(
-        **{
-            "Ventas objetivo": ("Es venta objetivo", lambda s: int(s.sum())),
-            "Crosselling": ("Es crosselling", lambda s: int(s.sum())),
-            "Total gestiones": ("Código cliente", "count"),
-        }
-    )
-    resumen_nodos = resumen_nodos.sort_values(["Ventas objetivo", "Crosselling", "Total gestiones"], ascending=[False, False, False]).reset_index(drop=True)
-    resumen_nodos.insert(0, "Ranking", range(1, len(resumen_nodos) + 1))
-    return resumen_nodos
-
-
-def _resumen_socios_para_reporte(resumen: pd.DataFrame) -> pd.DataFrame:
-    if resumen.empty:
-        return pd.DataFrame(columns=["Ranking", "EH", "Socio", "Ventas objetivo", "Crosselling", "Total gestiones", "Objetivo", "Cumplimiento", "Faltan", "Observación"])
-    df = resumen.copy().sort_values(["Ventas objetivo", "Crosselling", "Cumplimiento"], ascending=[False, False, False]).reset_index(drop=True)
-    salida = pd.DataFrame({
-        "Ranking": range(1, len(df) + 1),
-        "EH": df["EH"],
-        "Socio": df["Socio"],
-        "Ventas objetivo": df["Ventas objetivo"].astype(int),
-        "Crosselling": df["Crosselling"].astype(int),
-        "Total gestiones": df["Total gestiones"].astype(int),
-        "Objetivo": df["Objetivo"].astype(int),
-        "Cumplimiento": df["Cumplimiento"].round(1),
-        "Faltan": df["Faltan"].astype(int),
-        "Observación": df.apply(observacion_resumen, axis=1),
-    })
-    return salida
-
-
-def _ajustar_ancho(ws, max_width: int = 38) -> None:
-    from openpyxl.utils import get_column_letter
-    for col_idx in range(1, ws.max_column + 1):
-        letra = get_column_letter(col_idx)
-        ancho = 10
-        for cell in ws[letra]:
-            value = cell.value
-            if value is None:
-                continue
-            ancho = max(ancho, min(len(str(value)) + 2, max_width))
-        ws.column_dimensions[letra].width = ancho
-
-
-def _estilo_tabla(ws, titulo: str, header_row: int = 3) -> None:
-    from openpyxl.styles import Font, PatternFill, Border, Side, Alignment
-    from openpyxl.utils import get_column_letter
-
-    azul = "0B5CAD"
-    celeste = "D9EAF7"
-    gris = "F8FAFC"
-    borde = Side(style="thin", color="D0D7DE")
-
-    max_col = max(ws.max_column, 1)
-    ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=max_col)
-    c = ws.cell(1, 1)
-    c.value = titulo
-    c.fill = PatternFill("solid", fgColor=azul)
-    c.font = Font(color="FFFFFF", bold=True, size=14)
-    c.alignment = Alignment(horizontal="center", vertical="center")
-    ws.row_dimensions[1].height = 28
-
-    for cell in ws[header_row]:
-        cell.fill = PatternFill("solid", fgColor=celeste)
-        cell.font = Font(bold=True, color="1F2937")
-        cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
-        cell.border = Border(top=borde, bottom=borde, left=borde, right=borde)
-    ws.row_dimensions[header_row].height = 24
-
-    for row in ws.iter_rows(min_row=header_row + 1, max_row=ws.max_row, max_col=max_col):
-        if row[0].row % 2 == 0:
-            for cell in row:
-                cell.fill = PatternFill("solid", fgColor=gris)
-        for cell in row:
-            cell.border = Border(top=borde, bottom=borde, left=borde, right=borde)
-            cell.alignment = Alignment(vertical="top", wrap_text=True)
-
-    if ws.max_row >= header_row:
-        ws.auto_filter.ref = f"A{header_row}:{get_column_letter(max_col)}{ws.max_row}"
-    ws.freeze_panes = f"A{header_row + 1}"
-    _ajustar_ancho(ws)
-
-
-def _pintar_resumen(ws) -> None:
-    from openpyxl.styles import Font, PatternFill, Border, Side, Alignment
-    from openpyxl.utils import get_column_letter
-
-    azul = "0B5CAD"
-    celeste = "D9EAF7"
-    verde = "D9F99D"
-    morado = "E9D5FF"
-    naranja = "FFEDD5"
-    gris = "F8FAFC"
-    borde = Side(style="thin", color="D0D7DE")
-
-    ws.merge_cells("A1:J1")
-    ws["A1"].fill = PatternFill("solid", fgColor=azul)
-    ws["A1"].font = Font(color="FFFFFF", bold=True, size=15)
-    ws["A1"].alignment = Alignment(horizontal="center", vertical="center")
-    ws.row_dimensions[1].height = 30
-
-    for rng, color in [("A5:B6", verde), ("C5:D6", morado), ("E5:F6", celeste), ("G5:H6", naranja), ("I5:J6", gris)]:
-        ws.merge_cells(rng)
-        cell = ws[rng.split(":")[0]]
-        cell.fill = PatternFill("solid", fgColor=color)
-        cell.font = Font(bold=True, size=12)
-        cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
-        for row in ws[rng]:
-            for c in row:
-                c.border = Border(top=borde, bottom=borde, left=borde, right=borde)
-
-    for row_idx in range(1, ws.max_row + 1):
-        first = ws.cell(row_idx, 1).value
-        if isinstance(first, str) and (first.startswith("🏆") or first.startswith("📍")):
-            ws.cell(row_idx, 1).font = Font(bold=True, size=13, color="0F172A")
-
-    for row_idx in range(1, ws.max_row + 1):
-        valores = [ws.cell(row_idx, c).value for c in range(1, ws.max_column + 1)]
-        if "Ranking" in valores or "Nodo" in valores:
-            for cell in ws[row_idx]:
-                if cell.value is not None:
-                    cell.fill = PatternFill("solid", fgColor=celeste)
-                    cell.font = Font(bold=True, color="1F2937")
-                    cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
-                    cell.border = Border(top=borde, bottom=borde, left=borde, right=borde)
-        elif row_idx > 1:
-            for cell in ws[row_idx]:
-                if cell.value is not None:
-                    cell.border = Border(top=borde, bottom=borde, left=borde, right=borde)
-                    cell.alignment = Alignment(vertical="top", wrap_text=True)
-
-    ws.freeze_panes = "A10"
-    _ajustar_ancho(ws, 34)
-    for col in range(1, ws.max_column + 1):
-        ws.column_dimensions[get_column_letter(col)].width = min(ws.column_dimensions[get_column_letter(col)].width, 36)
-
-
-def excel_presentacion_bytes(ventas: pd.DataFrame, resumen: pd.DataFrame, filtro_eh: str | None = None) -> BytesIO:
-    """Reporte ordenado para presentar: resumen, ventas objetivo, crosselling, nodos y datos completos."""
-    salida = BytesIO()
-    fecha_reporte = datetime.now(ZoneInfo("America/La_Paz")).strftime("%d/%m/%Y %H:%M") if ZoneInfo else datetime.now().strftime("%d/%m/%Y %H:%M")
-
-    ventas_base = ventas.copy()
-    resumen_base = resumen.copy()
-    if filtro_eh:
-        filtro = ventas_base["EH"].astype(str) == str(filtro_eh)
-        ventas_base = ventas_base[filtro].copy()
-        resumen_base = resumen_base[resumen_base["EH"].astype(str) == str(filtro_eh)].copy()
-
-    resumen_socios = _resumen_socios_para_reporte(resumen_base)
-    ventas_obj = _ventas_para_reporte(ventas_base, ventas_base["Es venta objetivo"] if not ventas_base.empty else None)
-    cross = _ventas_para_reporte(ventas_base, ventas_base["Es crosselling"] if not ventas_base.empty else None)
-    datos = _ventas_para_reporte(ventas_base)
-    nodos = _resumen_nodos_para_reporte(ventas_base)
-
-    total_obj = int(ventas_base["Es venta objetivo"].sum()) if not ventas_base.empty else 0
-    total_cross = int(ventas_base["Es crosselling"].sum()) if not ventas_base.empty else 0
-    total_gest = len(ventas_base)
-    total_socios = int(resumen_socios["EH"].nunique()) if not resumen_socios.empty else 0
-    objetivo = int(resumen_base["Objetivo"].sum()) if not resumen_base.empty else int(st.session_state.get("objetivo_global", 400))
-
-    if filtro_eh and not resumen_socios.empty:
-        socio_txt = str(resumen_socios.iloc[0]["Socio"])
-        eh_txt = str(resumen_socios.iloc[0]["EH"])
-        titulo = "📊 VENTAS POR SOCIO - REPORTE PARA PRESENTACIÓN"
-        subtitulo = f"Socio: {socio_txt}"
-    else:
-        eh_txt = "Todos"
-        titulo = "📊 REPORTE GENERAL DE VENTAS - PRESENTACIÓN"
-        subtitulo = "Socios: Todos los socios"
-
-    with pd.ExcelWriter(salida, engine="openpyxl") as writer:
-        # Hojas principales.
-        pd.DataFrame().to_excel(writer, index=False, sheet_name="Resumen")
-        ventas_obj.to_excel(writer, index=False, sheet_name="Ventas ordenadas", startrow=2)
-        cross.to_excel(writer, index=False, sheet_name="Crosselling", startrow=2)
-        nodos.to_excel(writer, index=False, sheet_name="Resumen nodos", startrow=2)
-        datos.to_excel(writer, index=False, sheet_name="Datos completos", startrow=2)
-
-        wb = writer.book
-        ws = wb["Resumen"]
-        ws["A1"] = titulo
-        ws["A3"] = subtitulo
-        ws["D3"] = f"EH: {eh_txt}"
-        ws["G3"] = f"Generado: {fecha_reporte}"
-        ws["A5"] = f"✅ Ventas objetivo\n{total_obj}"
-        ws["C5"] = f"🔄 Crosselling\n{total_cross}"
-        ws["E5"] = f"📌 Total gestiones\n{total_gest}"
-        ws["G5"] = f"👥 Socios\n{total_socios}"
-        ws["I5"] = f"🎯 Objetivo\n{objetivo}"
-
-        fila = 9
-        ws.cell(fila, 1, "🏆 Resumen por socio")
-        fila += 1
-        for col_idx, col in enumerate(resumen_socios.columns, start=1):
-            ws.cell(fila, col_idx, col)
-        for r_idx, row in enumerate(resumen_socios.itertuples(index=False), start=fila + 1):
-            for c_idx, value in enumerate(row, start=1):
-                ws.cell(r_idx, c_idx, value)
-
-        fila = fila + len(resumen_socios) + 4
-        ws.cell(fila, 1, "📍 Top nodos por ventas objetivo")
-        fila += 1
-        top_nodos = nodos.head(20).copy()
-        for col_idx, col in enumerate(top_nodos.columns, start=1):
-            ws.cell(fila, col_idx, col)
-        for r_idx, row in enumerate(top_nodos.itertuples(index=False), start=fila + 1):
-            for c_idx, value in enumerate(row, start=1):
-                ws.cell(r_idx, c_idx, value)
-
-        _pintar_resumen(ws)
-        _estilo_tabla(wb["Ventas ordenadas"], "✅ VENTAS OBJETIVO ORDENADAS", header_row=3)
-        _estilo_tabla(wb["Crosselling"], "🔄 CROSSSELLING ORDENADO", header_row=3)
-        _estilo_tabla(wb["Resumen nodos"], "📍 RESUMEN POR NODO", header_row=3)
-        _estilo_tabla(wb["Datos completos"], "📋 DATOS COMPLETOS ORDENADOS", header_row=3)
-
-    salida.seek(0)
-    return salida
+def key_mensaje(prefix: str, texto: str) -> str:
+    digest = hashlib.md5(texto.encode("utf-8", errors="ignore")).hexdigest()[:10]
+    safe = re.sub(r"[^A-Za-z0-9_]+", "_", prefix)[:40]
+    return f"msg_{safe}_{digest}"
 
 
 # =========================================================
-# ESTILO
+# ESTILO VISUAL / MOTIVACIÓN
 # =========================================================
 def aplicar_estilos() -> None:
     st.markdown(
         """
         <style>
-        .main .block-container {padding-top: 1.1rem; padding-bottom: 2rem;}
+        .main .block-container {padding-top: 1.2rem; padding-bottom: 2rem;}
         .hero-box {
-            padding: 26px 28px;
-            border-radius: 26px;
+            padding: 28px;
+            border-radius: 24px;
             background: linear-gradient(135deg, #0033A0 0%, #006BEA 45%, #00AEEF 100%);
             color: white;
-            box-shadow: 0 12px 28px rgba(0, 51, 160, .22);
-            margin-bottom: 20px;
+            box-shadow: 0 12px 30px rgba(0, 51, 160, .22);
+            margin-bottom: 18px;
         }
         .hero-box h1 {font-size: 2.25rem; margin: 0 0 8px 0;}
-        .hero-box p {font-size: 1.04rem; margin: 0; opacity: .96;}
+        .hero-box p {font-size: 1.05rem; margin: 0; opacity: .96;}
         .metric-card {
-            padding: 18px;
-            border-radius: 21px;
+            padding: 18px 18px;
+            border-radius: 20px;
             color: white;
-            min-height: 116px;
-            box-shadow: 0 8px 22px rgba(15, 23, 42, .16);
-            border: 1px solid rgba(255, 255, 255, .24);
+            min-height: 118px;
+            box-shadow: 0 8px 22px rgba(15, 23, 42, .13);
+            border: 1px solid rgba(255, 255, 255, .26);
         }
-        .metric-card .label {font-size: .86rem; opacity: .96; margin-bottom: 8px;}
-        .metric-card .value {font-size: 2.05rem; font-weight: 900; line-height: 1.05;}
-        .metric-card .note {font-size: .80rem; opacity: .94; margin-top: 8px;}
-        .top-card {
+        .metric-card .label {font-size: .88rem; opacity: .92; margin-bottom: 8px;}
+        .metric-card .value {font-size: 2rem; font-weight: 800; line-height: 1.05;}
+        .metric-card .note {font-size: .82rem; opacity: .94; margin-top: 8px;}
+        .podio-card {
             padding: 20px;
             border-radius: 24px;
             color: white;
-            min-height: 265px;
-            box-shadow: 0 10px 26px rgba(15, 23, 42, .18);
-            border: 1px solid rgba(255, 255, 255, .25);
+            box-shadow: 0 10px 28px rgba(15, 23, 42, .16);
+            min-height: 210px;
+            border: 1px solid rgba(255, 255, 255, .28);
         }
-        .top-card .rank {font-size: 2.1rem; font-weight: 950; margin-bottom: 12px;}
-        .top-card .name {font-size: 1.05rem; font-weight: 950; line-height: 1.18; min-height: 44px;}
-        .top-card .eh {font-size: .78rem; opacity: .92; margin: 9px 0 15px 0;}
-        .top-card .sales {font-size: 2.45rem; font-weight: 950; line-height: 1;}
-        .top-card .sub {font-size: .84rem; opacity: .97; margin-top: 8px;}
-        .mini-progress-bg {height: 9px; border-radius: 999px; background: rgba(255,255,255,.28); overflow: hidden; margin-top: 12px;}
-        .mini-progress-fill {height: 9px; border-radius: 999px; background: rgba(255,255,255,.92);}
-        .section-card {
+        .podio-card .medal {font-size: 2.2rem; margin-bottom: 8px;}
+        .podio-card .name {font-size: 1.15rem; font-weight: 800; margin-bottom: 4px;}
+        .podio-card .eh {font-size: .82rem; opacity: .9; margin-bottom: 12px;}
+        .podio-card .big {font-size: 1.65rem; font-weight: 900;}
+        .podio-card .small {font-size: .88rem; opacity: .95; margin-top: 8px;}
+        .badge-box {
             padding: 16px;
             border-radius: 18px;
             background: #F8FAFC;
             border: 1px solid #E2E8F0;
-            min-height: 128px;
-            margin-bottom: 10px;
+            min-height: 118px;
         }
-        .section-card .title {font-weight: 900; font-size: .98rem; color: #0F172A; margin-bottom: 8px;}
-        .section-card .text {font-size: .90rem; color: #334155; line-height: 1.38;}
-        .info-box {
-            padding: 16px 18px;
-            border-radius: 18px;
-            background: #ECFDF5;
-            border: 1px solid #86EFAC;
-            color: #14532D;
-            margin: 10px 0 18px 0;
-        }
-        .alert-box {
-            padding: 16px 18px;
-            border-radius: 18px;
-            background: #FFF7ED;
+        .badge-box .title {font-weight: 800; font-size: 1rem; color: #0F172A; margin-bottom: 6px;}
+        .badge-box .text {font-size: .92rem; color: #334155;}
+        .challenge-box {
+            padding: 18px;
+            border-radius: 22px;
+            background: linear-gradient(135deg, #FFF7ED, #FFEDD5);
             border: 1px solid #FDBA74;
             color: #7C2D12;
-            margin: 10px 0 18px 0;
+            margin: 12px 0 18px 0;
         }
+        .challenge-box b {color: #9A3412;}
         .stProgress > div > div > div > div {border-radius: 999px;}
         </style>
         """,
@@ -485,73 +214,265 @@ def tarjeta_metric(label: str, valor: str | int | float, nota: str, color1: str,
     )
 
 
+def estado_cumplimiento(cumplimiento: float, ventas_obj: int, objetivo: int) -> tuple[str, str, str, str, str]:
+    if objetivo <= 0:
+        return "⚪", "Sin objetivo", "#64748B", "Objetivo no cargado", "Cargar objetivo para medir avance real."
+    if ventas_obj >= objetivo:
+        return "🏆", "Objetivo cumplido", "#16A34A", "Meta cumplida", "Mantener ritmo y cuidar calidad de instalación."
+    if cumplimiento >= 80:
+        return "🔥", "Muy cerca", "#2563EB", "A punto de cumplir", "Cerrar las ventas faltantes hoy o mañana."
+    if cumplimiento >= 60:
+        return "💪", "En carrera", "#EAB308", "Buen avance", "Necesita empuje diario para llegar a tiempo."
+    if ventas_obj > 0:
+        return "⚡", "Necesita impulso", "#F97316", "Hay oportunidad", "Activar seguimiento de prospectos y cierres rápidos."
+    return "🚨", "Sin avance", "#DC2626", "Sin ventas objetivo", "Prioridad: conseguir la primera venta objetivo."
+
+
+def mensaje_motivacional_por_estado(cumplimiento: float, ventas_obj: int, objetivo: int, faltan: int) -> str:
+    if objetivo <= 0:
+        return "Carguemos su objetivo para medir el avance correctamente."
+    if ventas_obj >= objetivo:
+        extra = ventas_obj - objetivo
+        return f"🏆 Objetivo cumplido. Excelente trabajo; ya está {extra} venta(s) arriba de la meta."
+    if faltan <= 3:
+        return f"🔥 Está a solo {faltan} venta(s) de cumplir. Hoy puede cerrar el objetivo."
+    if cumplimiento >= 80:
+        return f"💪 Muy buen avance. Faltan {faltan} venta(s), hay que empujar el cierre."
+    if cumplimiento >= 60:
+        return f"⚡ Va en carrera. Faltan {faltan} venta(s), necesita constancia diaria."
+    if ventas_obj > 0:
+        return f"📌 Ya empezó, ahora toca acelerar. Faltan {faltan} venta(s) para cumplir."
+    return "🚨 Todavía no registra ventas objetivo. Hoy la meta mínima es lograr la primera venta."
+
+
+def reto_sugerido(cumplimiento: float, ventas_obj: int, objetivo: int, faltan: int) -> str:
+    if objetivo <= 0:
+        return "Revisar objetivo cargado."
+    if ventas_obj >= objetivo:
+        return "Reto: mantener calidad y sumar ventas extra sin descuidar instalaciones."
+    if faltan <= 3:
+        return f"Reto: cerrar {faltan} venta(s) para entrar al grupo de objetivo cumplido."
+    if cumplimiento >= 80:
+        return "Reto: mínimo 1 venta objetivo diaria hasta cumplir."
+    if cumplimiento >= 60:
+        return "Reto: recuperar 2 ventas objetivo esta semana."
+    if ventas_obj > 0:
+        return "Reto: revisar cartera, llamar pendientes y buscar 2 cierres rápidos."
+    return "Reto: primera venta objetivo del día antes del mediodía."
+
+
+def agregar_columnas_visuales(resumen: pd.DataFrame) -> pd.DataFrame:
+    if resumen.empty:
+        return resumen.copy()
+    salida = resumen.copy().reset_index(drop=True)
+    salida.insert(0, "Puesto", range(1, len(salida) + 1))
+    estados = salida.apply(lambda r: estado_cumplimiento(float(r["Cumplimiento"]), int(r["Ventas objetivo"]), int(r["Objetivo"])), axis=1)
+    salida["Estado"] = [f"{e[0]} {e[1]}" for e in estados]
+    salida["Motivación"] = salida.apply(
+        lambda r: mensaje_motivacional_por_estado(float(r["Cumplimiento"]), int(r["Ventas objetivo"]), int(r["Objetivo"]), int(r["Faltan"])),
+        axis=1,
+    )
+    salida["Reto sugerido"] = salida.apply(
+        lambda r: reto_sugerido(float(r["Cumplimiento"]), int(r["Ventas objetivo"]), int(r["Objetivo"]), int(r["Faltan"])),
+        axis=1,
+    )
+    salida["Avance"] = salida.apply(lambda r: f"{int(r['Ventas objetivo'])}/{int(r['Objetivo'])}", axis=1)
+    salida["Cumplimiento"] = salida["Cumplimiento"].round(1)
+    return salida
+
+
+def color_fila_ranking(row: pd.Series) -> list[str]:
+    cumplimiento = float(row.get("Cumplimiento", 0) or 0)
+    ventas_obj = int(row.get("Ventas objetivo", 0) or 0)
+    objetivo = int(row.get("Objetivo", 0) or 0)
+    _, _, color, _, _ = estado_cumplimiento(cumplimiento, ventas_obj, objetivo)
+    fondo = {
+        "#16A34A": "background-color: #DCFCE7; color: #14532D; font-weight: 700;",
+        "#2563EB": "background-color: #DBEAFE; color: #1E3A8A; font-weight: 700;",
+        "#EAB308": "background-color: #FEF9C3; color: #713F12; font-weight: 700;",
+        "#F97316": "background-color: #FFEDD5; color: #7C2D12; font-weight: 700;",
+        "#DC2626": "background-color: #FEE2E2; color: #7F1D1D; font-weight: 700;",
+        "#64748B": "background-color: #F1F5F9; color: #334155; font-weight: 700;",
+    }.get(color, "")
+    return [fondo for _ in row]
+
+
+def render_podio(resumen: pd.DataFrame) -> None:
+    if resumen.empty:
+        return
+    st.subheader("🏆 Podio motivacional")
+    top = resumen.head(3).copy().reset_index(drop=True)
+    cols = st.columns(3)
+    medallas = ["🥇", "🥈", "🥉"]
+    colores = [
+        ("#F59E0B", "#F97316"),
+        ("#64748B", "#94A3B8"),
+        ("#B45309", "#D97706"),
+    ]
+    for i, (_, r) in enumerate(top.iterrows()):
+        emoji, estado, _, _, _ = estado_cumplimiento(float(r["Cumplimiento"]), int(r["Ventas objetivo"]), int(r["Objetivo"]))
+        mensaje = mensaje_motivacional_por_estado(float(r["Cumplimiento"]), int(r["Ventas objetivo"]), int(r["Objetivo"]), int(r["Faltan"]))
+        c1, c2 = colores[i]
+        cols[i].markdown(
+            f"""
+            <div class="podio-card" style="background: linear-gradient(135deg, {c1}, {c2});">
+                <div class="medal">{medallas[i]}</div>
+                <div class="name">{r['Socio']}</div>
+                <div class="eh">EH {r['EH']}</div>
+                <div class="big">{int(r['Ventas objetivo'])}/{int(r['Objetivo'])}</div>
+                <div class="small">{emoji} {estado} · {float(r['Cumplimiento']):.1f}%</div>
+                <div class="small">🔄 Crosselling: {int(r['Crosselling'])}</div>
+                <div class="small">{mensaje}</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+
+def render_insignias(resumen: pd.DataFrame) -> None:
+    if resumen.empty:
+        return
+    st.subheader("🎖️ Reconocimientos para motivar")
+    con_obj = resumen[resumen["Objetivo"] > 0].copy()
+    cols = st.columns(4)
+
+    if not con_obj.empty:
+        lider = con_obj.sort_values(["Cumplimiento", "Ventas objetivo"], ascending=[False, False]).iloc[0]
+        cerca = con_obj[(con_obj["Faltan"] > 0) & (con_obj["Faltan"] <= 3)].sort_values("Faltan").head(1)
+        impulso = con_obj[con_obj["Ventas objetivo"] > 0].sort_values(["Faltan", "Cumplimiento"], ascending=[True, False]).head(1)
+        cross = resumen[resumen["Crosselling"] > 0].sort_values("Crosselling", ascending=False).head(1)
+
+        cols[0].markdown(f"""<div class="badge-box"><div class="title">🏆 Líder del ranking</div><div class="text">{lider['Socio']} · {float(lider['Cumplimiento']):.1f}%</div></div>""", unsafe_allow_html=True)
+        if not cerca.empty:
+            r = cerca.iloc[0]
+            cols[1].markdown(f"""<div class="badge-box"><div class="title">🔥 Más cerca de cumplir</div><div class="text">{r['Socio']} · faltan {int(r['Faltan'])}</div></div>""", unsafe_allow_html=True)
+        else:
+            cols[1].markdown("""<div class="badge-box"><div class="title">🔥 Más cerca de cumplir</div><div class="text">Sin socios a 3 ventas o menos.</div></div>""", unsafe_allow_html=True)
+        if not impulso.empty:
+            r = impulso.iloc[0]
+            cols[2].markdown(f"""<div class="badge-box"><div class="title">🚀 Socio en impulso</div><div class="text">{r['Socio']} · {int(r['Ventas objetivo'])} ventas objetivo</div></div>""", unsafe_allow_html=True)
+        else:
+            cols[2].markdown("""<div class="badge-box"><div class="title">🚀 Socio en impulso</div><div class="text">Pendiente de activar.</div></div>""", unsafe_allow_html=True)
+        if not cross.empty:
+            r = cross.iloc[0]
+            cols[3].markdown(f"""<div class="badge-box"><div class="title">🔄 Mayor crosselling</div><div class="text">{r['Socio']} · {int(r['Crosselling'])} crosselling</div></div>""", unsafe_allow_html=True)
+        else:
+            cols[3].markdown("""<div class="badge-box"><div class="title">🔄 Mayor crosselling</div><div class="text">Sin crosselling registrado.</div></div>""", unsafe_allow_html=True)
+
+
+def render_reto_equipo(resumen: pd.DataFrame) -> None:
+    if resumen.empty:
+        return
+    total_obj = int(resumen["Ventas objetivo"].sum())
+    total_meta = int(resumen["Objetivo"].sum())
+    faltan = max(total_meta - total_obj, 0)
+    cumplimiento = (total_obj / total_meta * 100) if total_meta > 0 else 0
+    if total_meta <= 0:
+        texto = "Carga el archivo de objetivos para activar el reto del equipo."
+    elif faltan == 0:
+        texto = "🏆 El equipo ya cumplió el objetivo global. Reto: sostener calidad, instalaciones y ventas extra."
+    elif cumplimiento >= 80:
+        texto = f"🔥 Reto del equipo: faltan {faltan} ventas objetivo. Cada socio debe empujar mínimo 1 cierre."
+    else:
+        texto = f"💪 Reto del equipo: faltan {faltan} ventas objetivo. Enfoque diario en ventas nuevas, no en crosselling."
+    st.markdown(f"""<div class="challenge-box"><b>🎯 Reto del día:</b> {texto}</div>""", unsafe_allow_html=True)
+
+
+def render_barra_equipo(total_obj: int, total_objetivo: int) -> None:
+    if total_objetivo <= 0:
+        st.progress(0, text="Objetivo global no cargado")
+        return
+    avance = min(max(total_obj / total_objetivo, 0), 1)
+    st.progress(avance, text=f"Avance global: {total_obj}/{total_objetivo} ventas objetivo ({avance * 100:.1f}%)")
+
+
 # =========================================================
 # OBJETIVOS
 # =========================================================
-def columnas_objetivo_candidatas(df_obj_norm: pd.DataFrame, objetivo_global: int) -> list[tuple[str, int, int]]:
-    """Devuelve columnas numéricas candidatas: (columna, suma, diferencia)."""
-    excluir = {
-        "pos_code", "eh", "codigo_eh", "vendedor_eh", "cod_eh", "cod_pdv", "pdv", "codigo_pos",
-        "telefono", "celular", "ci", "documento", "id", "cliente_nro",
-    }
-    candidatos: list[tuple[str, int, int]] = []
-    for col in df_obj_norm.columns:
-        nombre = normalizar_columna(col)
-        if nombre in excluir or any(x in nombre for x in ["nombre", "socio", "owner", "vendedor", "fecha"]):
+def detectar_columna_objetivo(df_obj: pd.DataFrame) -> str | None:
+    candidatos_prioritarios = [
+        "BU JUNIO", "BU_JUNIO", "OBJETIVO", "META", "BU", "JUNIO", "OBJ JUNIO", "OBJETIVO JUNIO",
+    ]
+    for c in candidatos_prioritarios:
+        col = buscar_columna(df_obj, [c])
+        if col:
+            return col
+
+    for col in df_obj.columns:
+        if col in {"pos_code", "eh", "codigo_eh", "vendedor_eh"}:
             continue
-        serie = pd.to_numeric(df_obj_norm[col], errors="coerce")
-        if serie.notna().sum() == 0:
-            continue
-        # Evita columnas que parecen EH/POS o códigos grandes.
-        valores = serie.dropna()
-        if valores.empty:
-            continue
-        if valores.max() > 1000:
-            continue
-        suma = int(valores.fillna(0).sum())
-        diff = abs(suma - int(objetivo_global))
-        candidatos.append((col, suma, diff))
-    candidatos.sort(key=lambda x: (x[2], -x[1]))
-    return candidatos
+        serie_num = pd.to_numeric(df_obj[col], errors="coerce")
+        if serie_num.notna().sum() > 0:
+            return col
+    return None
 
 
-def procesar_objetivos(df_obj_original: pd.DataFrame, columna_objetivo: str | None, objetivo_global: int) -> pd.DataFrame:
+def procesar_objetivos(df_obj_original: pd.DataFrame, columna_objetivo_manual: str | None = None) -> pd.DataFrame:
     df = normalizar_dataframe(df_obj_original)
-    col_eh = buscar_columna(df, ["POS_CODE", "EH", "VENDEDOR_EH", "CODIGO_EH", "COD_EH", "CODIGO_POS", "COD_PDV", "PDV"])
-    col_socio = buscar_columna(df, ["POS_OWNER", "SOCIO", "VENDEDOR_NOMBRE", "NOMBRE_SOCIO", "NOMBRE", "EJECUTIVO"])
+    col_eh = buscar_columna(df, ["POS_CODE", "EH", "VENDEDOR_EH", "CODIGO_EH", "COD_EH"])
+    col_socio = buscar_columna(df, ["POS_OWNER", "SOCIO", "VENDEDOR_NOMBRE", "NOMBRE_SOCIO", "NOMBRE"])
+    col_obj = normalizar_columna(columna_objetivo_manual) if columna_objetivo_manual else detectar_columna_objetivo(df)
 
+    faltantes = []
     if not col_eh:
-        raise ValueError("No se encontró columna de EH/POS en Objetivo.xlsx.")
-
-    candidatos = columnas_objetivo_candidatas(df, objetivo_global)
-    if columna_objetivo is None or columna_objetivo == "AUTOMATICO":
-        if not candidatos:
-            raise ValueError("No se encontró una columna numérica válida para el objetivo.")
-        col_obj = candidatos[0][0]
-    else:
-        col_obj = normalizar_columna(columna_objetivo)
-        if col_obj not in df.columns:
-            raise ValueError(f"No existe la columna de objetivo seleccionada: {columna_objetivo}")
+        faltantes.append("POS_CODE / EH")
+    if not col_obj:
+        faltantes.append("BU JUNIO / OBJETIVO")
+    if faltantes:
+        raise ValueError("No se encontraron columnas de objetivos: " + ", ".join(faltantes))
 
     salida = pd.DataFrame({
         "EH": df[col_eh].apply(limpiar_eh),
         "Socio objetivo": df[col_socio].apply(limpiar_texto) if col_socio else "",
         "Objetivo": pd.to_numeric(df[col_obj], errors="coerce").fillna(0).astype(int),
     })
-    salida = salida[(salida["EH"] != "") & (salida["Objetivo"] >= 0)].copy()
-    salida = salida.drop_duplicates(subset=["EH"], keep="last")
-    salida.attrs["columna_objetivo_usada"] = col_obj
+    salida = salida[salida["EH"] != ""].drop_duplicates(subset=["EH"], keep="last")
     return salida
+
+
+# =========================================================
+# CROSSSELLING MANUAL / ADICIONAL
+# =========================================================
+def extraer_codigos_de_texto(texto: str) -> set[str]:
+    codigos: set[str] = set()
+    for token in re.split(r"[\s,;|]+", str(texto)):
+        codigo = limpiar_codigo(token)
+        if codigo:
+            codigos.add(codigo)
+    return codigos
+
+
+def extraer_codigos_de_archivo(archivo) -> set[str]:
+    if archivo is None:
+        return set()
+    try:
+        df = leer_archivo(archivo)
+    except Exception:
+        return set()
+    if df.empty:
+        return set()
+
+    df_norm = normalizar_dataframe(df)
+    col_codigo = buscar_columna(df_norm, ["CLIENTE_NRO", "CODIGO", "CODIGO_CLIENTE", "COD_CLIENTE", "CLIENTE", "Código cliente"])
+    if col_codigo is None:
+        col_codigo = df_norm.columns[0]
+    return {limpiar_codigo(v) for v in df_norm[col_codigo].tolist() if limpiar_codigo(v)}
 
 
 # =========================================================
 # VENTAS
 # =========================================================
-def preparar_ventas(df_original: pd.DataFrame) -> tuple[pd.DataFrame, dict[str, str | None]]:
+def preparar_ventas(
+    df_original: pd.DataFrame,
+    codigos_cross_manual: set[str] | None = None,
+    detectar_cross_por_tipo: bool = True,
+    codigo_cross_desde: str = "",
+) -> tuple[pd.DataFrame, dict[str, str | None]]:
     df = normalizar_dataframe(df_original)
+    codigos_cross_manual = codigos_cross_manual or set()
 
     col_codigo = buscar_columna(df, ["CLIENTE_NRO", "CODIGO_CLIENTE", "COD_CLIENTE", "CODIGO", "COD", "CLIENTE"])
-    col_eh = buscar_columna(df, ["VENDEDOR_EH", "EH", "POS_CODE", "CODIGO_EH", "COD_EH", "CODIGO_POS", "COD_PDV", "PDV", "EHUMANO", "EH_PROMOTOR"])
+    col_eh = buscar_columna(df, ["VENDEDOR_EH", "EH", "POS_CODE", "CODIGO_EH", "EHUMANO", "EH_PROMOTOR"])
     col_socio = buscar_columna(df, ["VENDEDOR_NOMBRE", "SOCIO", "POS_OWNER", "NOMBRE_SOCIO", "VENDEDOR", "EJECUTIVO"])
     col_tipo = buscar_columna(df, ["TIPO_VENTA", "TIPO VENTA", "TIPO", "TIPO_OPERACION", "OPERACION"])
     col_nodo = buscar_columna(df, ["NODO_NOMBRE", "NODO", "NODO_RED", "NODO ACTUAL"])
@@ -575,15 +496,15 @@ def preparar_ventas(df_original: pd.DataFrame) -> tuple[pd.DataFrame, dict[str, 
     faltantes = [k for k in ["codigo", "eh", "tipo_venta"] if columnas[k] is None]
     if faltantes:
         raise ValueError(
-            "No se encontraron columnas obligatorias en la base de ventas: " + ", ".join(faltantes) +
-            ". La app necesita CLIENTE_NRO, VENDEDOR_EH y TIPO_VENTA."
+            "No se encontraron columnas obligatorias en el archivo de ventas: " + ", ".join(faltantes) +
+            ". Columnas detectadas: " + ", ".join(df.columns[:80])
         )
 
     salida = pd.DataFrame({
         "Código cliente": df[col_codigo].apply(limpiar_codigo),
         "EH": df[col_eh].apply(limpiar_eh),
         "Socio": df[col_socio].apply(limpiar_texto) if col_socio else "SIN NOMBRE",
-        "Tipo venta": df[col_tipo].apply(limpiar_texto).str.upper().str.strip(),
+        "Tipo venta": df[col_tipo].apply(limpiar_texto).str.upper() if col_tipo else "",
         "Nodo": df[col_nodo].apply(limpiar_texto).str.upper() if col_nodo else "",
         "Fecha": df[col_fecha] if col_fecha else "",
         "Cliente": df[col_cliente].apply(limpiar_texto) if col_cliente else "",
@@ -592,237 +513,191 @@ def preparar_ventas(df_original: pd.DataFrame) -> tuple[pd.DataFrame, dict[str, 
     })
     salida = salida[(salida["Código cliente"] != "") & (salida["EH"] != "")].copy()
 
-    tipo_norm = salida["Tipo venta"].apply(lambda x: normalizar_columna(x).upper())
-    salida["Es crosselling"] = tipo_norm.str.contains("CROSS", na=False)
-    salida["Es venta objetivo"] = tipo_norm.str.contains("GROSS", na=False) & ~salida["Es crosselling"]
-    # Para evitar distorsión: solo GROSSADD suma. Tipos desconocidos no suman ni como cross.
-    salida.loc[~salida["Es venta objetivo"] & ~salida["Es crosselling"], "Es crosselling"] = False
-    salida["Motivo"] = ""
-    salida.loc[salida["Es venta objetivo"], "Motivo"] = "TIPO_VENTA = GROSSADD"
-    salida.loc[salida["Es crosselling"], "Motivo"] = "TIPO_VENTA = CROSS_SELLING"
-    salida.loc[~salida["Es venta objetivo"] & ~salida["Es crosselling"], "Motivo"] = "TIPO_VENTA no identificado"
+    tipo_cross = salida["Tipo venta"].str.contains(
+        r"CROSS|CROSSELL|CROSS_SELLING|CROSS SELLING|CROSSSELLING|CROSSEL|CROSELL",
+        case=False,
+        na=False,
+        regex=True,
+    ) if detectar_cross_por_tipo else pd.Series([False] * len(salida), index=salida.index)
+
+    codigo_cross = salida["Código cliente"].isin(codigos_cross_manual)
+
+    codigo_desde_limpio = limpiar_codigo(codigo_cross_desde)
+    if codigo_desde_limpio:
+        cod_num = pd.to_numeric(salida["Código cliente"], errors="coerce")
+        desde_num = pd.to_numeric(pd.Series([codigo_desde_limpio]), errors="coerce").iloc[0]
+        if pd.notna(desde_num):
+            codigo_cross_desde_mask = cod_num >= desde_num
+        else:
+            codigo_cross_desde_mask = pd.Series([False] * len(salida), index=salida.index)
+    else:
+        codigo_cross_desde_mask = pd.Series([False] * len(salida), index=salida.index)
+
+    salida["Es crosselling"] = tipo_cross | codigo_cross | codigo_cross_desde_mask
+    salida["Motivo crosselling"] = ""
+    salida.loc[tipo_cross, "Motivo crosselling"] = "Tipo venta"
+    salida.loc[codigo_cross, "Motivo crosselling"] = salida.loc[codigo_cross, "Motivo crosselling"].replace("", "Código manual")
+    salida.loc[codigo_cross_desde_mask, "Motivo crosselling"] = salida.loc[codigo_cross_desde_mask, "Motivo crosselling"].replace("", f"Desde código {codigo_desde_limpio}")
+    salida.loc[tipo_cross & codigo_cross, "Motivo crosselling"] = "Tipo venta + código manual"
+    salida.loc[tipo_cross & codigo_cross_desde_mask, "Motivo crosselling"] = salida.loc[tipo_cross & codigo_cross_desde_mask, "Motivo crosselling"].apply(lambda x: x if "+" in x else f"{x} + desde código")
 
     salida["Fecha texto"] = salida["Fecha"].apply(formatear_fecha)
     salida["Fecha orden"] = salida["Fecha"].apply(fecha_orden)
     return salida, columnas
 
 
-# =========================================================
-# RESUMEN
-# =========================================================
-def nombre_preferido(serie: pd.Series) -> str:
-    for valor in serie.tolist():
-        texto = limpiar_texto(valor)
-        if texto and texto.upper() not in {"SIN NOMBRE", "S/N", "NAN"}:
-            return texto
-    return "SIN NOMBRE"
-
-
 def calcular_resumen(ventas: pd.DataFrame, objetivos: pd.DataFrame | None) -> pd.DataFrame:
-    columnas = ["EH", "Socio", "Ventas objetivo", "Crosselling", "Total gestiones", "Objetivo", "Cumplimiento", "Faltan"]
-    if ventas.empty and (objetivos is None or objetivos.empty):
-        return pd.DataFrame(columns=columnas)
+    columnas_base = ["EH", "Socio", "Ventas objetivo", "Crosselling", "Total ventas", "Objetivo", "Cumplimiento", "Faltan"]
+    if ventas.empty:
+        return pd.DataFrame(columns=columnas_base)
 
-    if not ventas.empty:
-        ventas_resumen = ventas.groupby("EH", as_index=False).agg(
-            Socio=("Socio", nombre_preferido),
-            **{
-                "Ventas objetivo": ("Es venta objetivo", lambda s: int(s.sum())),
-                "Crosselling": ("Es crosselling", lambda s: int(s.sum())),
-                "Total gestiones": ("Código cliente", "count"),
-            },
-        )
-    else:
-        ventas_resumen = pd.DataFrame(columns=["EH", "Socio", "Ventas objetivo", "Crosselling", "Total gestiones"])
+    base = ventas.copy()
+    resumen = base.groupby(["EH", "Socio"], as_index=False).agg(
+        **{
+            "Ventas objetivo": ("Es crosselling", lambda s: int((~s).sum())),
+            "Crosselling": ("Es crosselling", lambda s: int(s.sum())),
+            "Total ventas": ("Código cliente", "count"),
+        }
+    )
 
     if objetivos is not None and not objetivos.empty:
-        resumen = ventas_resumen.merge(objetivos[["EH", "Socio objetivo", "Objetivo"]], on="EH", how="outer")
-        resumen["Socio"] = resumen.apply(
-            lambda r: r["Socio"] if limpiar_texto(r.get("Socio", "")).upper() not in {"", "SIN NOMBRE", "S/N", "NAN"}
-            else (limpiar_texto(r.get("Socio objetivo", "")) or "SIN NOMBRE"),
-            axis=1,
-        )
+        resumen = resumen.merge(objetivos[["EH", "Objetivo"]], on="EH", how="left")
     else:
-        resumen = ventas_resumen.copy()
         resumen["Objetivo"] = 0
 
-    for col in ["Ventas objetivo", "Crosselling", "Total gestiones", "Objetivo"]:
-        resumen[col] = pd.to_numeric(resumen.get(col, 0), errors="coerce").fillna(0).astype(int)
-    resumen["EH"] = resumen["EH"].apply(limpiar_eh)
-    resumen["Socio"] = resumen["Socio"].apply(limpiar_texto).replace("", "SIN NOMBRE")
+    resumen["Objetivo"] = pd.to_numeric(resumen["Objetivo"], errors="coerce").fillna(0).astype(int)
     resumen["Cumplimiento"] = resumen.apply(lambda r: (r["Ventas objetivo"] / r["Objetivo"] * 100) if r["Objetivo"] > 0 else 0, axis=1)
     resumen["Faltan"] = (resumen["Objetivo"] - resumen["Ventas objetivo"]).clip(lower=0).astype(int)
-    resumen = resumen.sort_values(["Ventas objetivo", "Crosselling", "Cumplimiento"], ascending=[False, False, False]).reset_index(drop=True)
-    return resumen[columnas]
-
-
-def resumen_visual(resumen: pd.DataFrame) -> pd.DataFrame:
-    if resumen.empty:
-        return resumen.copy()
-    df = resumen.copy().reset_index(drop=True)
-    df.insert(0, "Puesto", range(1, len(df) + 1))
-    df["Avance"] = df.apply(lambda r: f"{int(r['Ventas objetivo'])}/{int(r['Objetivo'])}", axis=1)
-    df["Cumplimiento"] = df["Cumplimiento"].round(1)
-    df["Estado"] = df.apply(lambda r: estado_texto(int(r["Ventas objetivo"]), int(r["Objetivo"]), float(r["Cumplimiento"])), axis=1)
-    return df
-
-
-def estado_texto(ventas_obj: int, objetivo: int, cumplimiento: float) -> str:
-    if objetivo <= 0:
-        return "⚪ Sin objetivo"
-    if ventas_obj >= objetivo:
-        return "🏆 Cumplido"
-    if cumplimiento >= 80:
-        return "🔥 Cerca"
-    if cumplimiento >= 60:
-        return "💪 En carrera"
-    if ventas_obj > 0:
-        return "⚡ Necesita impulso"
-    return "🚨 Sin avance"
-
-
-def color_fila(row: pd.Series) -> list[str]:
-    ventas = int(row.get("Ventas objetivo", 0) or 0)
-    objetivo = int(row.get("Objetivo", 0) or 0)
-    if objetivo > 0 and ventas >= objetivo:
-        style = "background-color: #DCFCE7; color: #14532D; font-weight: 700;"
-    elif objetivo > 0 and ventas / objetivo >= .8:
-        style = "background-color: #DBEAFE; color: #1E3A8A; font-weight: 700;"
-    elif objetivo > 0 and ventas / objetivo >= .6:
-        style = "background-color: #FEF9C3; color: #713F12; font-weight: 700;"
-    elif ventas > 0:
-        style = "background-color: #FFEDD5; color: #7C2D12; font-weight: 700;"
-    else:
-        style = "background-color: #FEE2E2; color: #7F1D1D; font-weight: 700;"
-    return [style for _ in row]
+    resumen = resumen.sort_values(["Cumplimiento", "Ventas objetivo", "Crosselling"], ascending=[False, False, False]).reset_index(drop=True)
+    return resumen[columnas_base]
 
 
 # =========================================================
-# WHATSAPP
+# MENSAJES WHATSAPP
 # =========================================================
-def mensaje_recomendacion(row: pd.Series) -> str:
-    ventas = int(row["Ventas objetivo"])
-    objetivo = int(row["Objetivo"])
-    faltan = int(row["Faltan"])
-    cumplimiento = float(row["Cumplimiento"])
-    if objetivo <= 0:
-        return "Revisar objetivo cargado para medir su avance."
-    if ventas >= objetivo:
-        return "Mantener calidad, cuidar instalaciones y seguir sumando ventas nuevas."
-    if faltan <= 3:
-        return f"Está a solo {faltan} venta(s). Priorizar cierres calientes hoy."
-    if cumplimiento >= 80:
-        return "Está cerca. Meta diaria sugerida: mínimo 1 venta nueva hasta cumplir."
-    if cumplimiento >= 60:
-        return "Buen avance, necesita empuje. Revisar cartera y recuperar 2 cierres esta semana."
-    if ventas > 0:
-        return "Necesita acelerar. Enfocar seguimiento a pendientes y prospectos con mayor intención."
-    return "Prioridad: lograr la primera venta nueva del día."
+def mensaje_avance_socio(socio_row: pd.Series, ventas_socio: pd.DataFrame) -> str:
+    eh = str(socio_row["EH"])
+    socio = str(socio_row["Socio"])
+    ventas_obj = int(socio_row["Ventas objetivo"])
+    cross = int(socio_row["Crosselling"])
+    total = int(socio_row["Total ventas"])
+    objetivo = int(socio_row["Objetivo"])
+    cumplimiento = float(socio_row["Cumplimiento"])
+    faltan = int(socio_row["Faltan"])
 
-
-def mensaje_ranking(resumen: pd.DataFrame) -> str:
-    total_obj = int(resumen["Ventas objetivo"].sum()) if not resumen.empty else 0
-    total_cross = int(resumen["Crosselling"].sum()) if not resumen.empty else 0
-    total = int(resumen["Total gestiones"].sum()) if not resumen.empty else 0
-    objetivo_global = int(st.session_state.get("objetivo_global", 400))
-    cumplimiento = (total_obj / objetivo_global * 100) if objetivo_global > 0 else 0
-    lineas = [
-        "🏆 *RANKING DE VENTAS - TOP 5*",
-        "",
-        f"✅ Ventas nuevas que suman: *{total_obj}*",
-        f"🔄 Crosselling separado: *{total_cross}*",
-        f"📊 Total gestiones: *{total}*",
-        f"🎯 Objetivo global: *{objetivo_global}*",
-        f"📈 Cumplimiento global: *{cumplimiento:.1f}%*",
-        "",
-        "*Top 5 por ventas nuevas:*",
-    ]
-    iconos = ["🥇", "🥈", "🥉", "🏅", "🏅"]
-    for i, (_, r) in enumerate(resumen.head(5).iterrows()):
-        lineas.append(
-            f"{iconos[i]} {r['Socio']} | EH {r['EH']} | *{int(r['Ventas objetivo'])} ventas* "
-            f"| Obj. {int(r['Objetivo'])} | Cross {int(r['Crosselling'])}"
-        )
-    return "\n".join(lineas)
-
-
-def mensaje_meta_superada(resumen: pd.DataFrame) -> str:
-    df = resumen[(resumen["Objetivo"] > 0) & (resumen["Ventas objetivo"] >= resumen["Objetivo"])].copy()
-    lineas = ["🚀 *SOCIOS QUE SOBREPASARON SU OBJETIVO*", ""]
-    if df.empty:
-        lineas.append("Todavía no hay socios con objetivo sobrepasado.")
-    else:
-        df["Arriba"] = df["Ventas objetivo"] - df["Objetivo"]
-        for _, r in df.sort_values(["Arriba", "Ventas objetivo"], ascending=[False, False]).head(10).iterrows():
-            lineas.append(f"🏆 {r['Socio']} | EH {r['EH']} | {int(r['Ventas objetivo'])}/{int(r['Objetivo'])} | +{int(r['Arriba'])} venta(s)")
-    return "\n".join(lineas)
-
-
-def mensaje_top_cross(resumen: pd.DataFrame) -> str:
-    df = resumen[resumen["Crosselling"] > 0].sort_values(["Crosselling", "Ventas objetivo"], ascending=[False, False]).head(10)
-    lineas = ["🔄 *TOP CROSSSELLING*", ""]
-    if df.empty:
-        lineas.append("No hay crosselling registrado.")
-    else:
-        for i, (_, r) in enumerate(df.iterrows(), start=1):
-            lineas.append(f"{i}. {r['Socio']} | EH {r['EH']} | Crosselling: *{int(r['Crosselling'])}* | Ventas nuevas: {int(r['Ventas objetivo'])}")
-    return "\n".join(lineas)
-
-
-def mensaje_pendientes(resumen: pd.DataFrame) -> str:
-    df = resumen[(resumen["Objetivo"] > 0) & (resumen["Faltan"] > 0)].sort_values(["Faltan", "Ventas objetivo"], ascending=[True, False]).head(15)
-    lineas = ["📌 *RECOMENDACIONES PARA CUMPLIR OBJETIVO*", ""]
-    if df.empty:
-        lineas.append("Todos los socios con objetivo cargado ya cumplieron.")
-    else:
-        for _, r in df.iterrows():
-            lineas.append(
-                f"👤 *{r['Socio']}* | EH {r['EH']}\n"
-                f"✅ Avance: {int(r['Ventas objetivo'])}/{int(r['Objetivo'])} ({float(r['Cumplimiento']):.1f}%) | Faltan: *{int(r['Faltan'])}*\n"
-                f"🎯 {mensaje_recomendacion(r)}\n"
-            )
-    return "\n".join(lineas)
-
-
-def mensaje_avance_socio(row: pd.Series, ventas_socio: pd.DataFrame) -> str:
-    ventas_obj = ventas_socio[ventas_socio["Es venta objetivo"]].copy().sort_values(["Fecha orden", "Código cliente"])
+    ventas_objetivo = ventas_socio[~ventas_socio["Es crosselling"]].copy().sort_values(["Fecha orden", "Código cliente"])
     ventas_cross = ventas_socio[ventas_socio["Es crosselling"]].copy().sort_values(["Fecha orden", "Código cliente"])
+
     lineas = [
         "📊 *AVANCE DE VENTAS*",
         "",
-        f"👤 *{row['Socio']}*",
-        f"EH: *{row['EH']}*",
+        f"👤 *{socio}*",
+        f"EH: *{eh}*",
         "",
-        f"✅ Ventas nuevas: *{int(row['Ventas objetivo'])}*",
-        f"🔄 Crosselling: *{int(row['Crosselling'])}*",
-        f"📊 Total gestiones: *{int(row['Total gestiones'])}*",
+        f"✅ Ventas objetivo: *{ventas_obj}*",
+        f"🔄 Crosselling: *{cross}*",
+        f"📊 Total ventas: *{total}*",
         "",
-        f"🎯 Objetivo: *{int(row['Objetivo'])}*",
-        f"📈 Cumplimiento: *{float(row['Cumplimiento']):.1f}%*",
-        f"⏳ Faltan: *{int(row['Faltan'])}*",
-        f"📌 {mensaje_recomendacion(row)}",
+        f"🎯 Objetivo: *{objetivo}*",
+        f"📈 Cumplimiento: *{cumplimiento:.1f}%*",
+        f"⏳ Faltan: *{faltan}*",
         "",
-        "✅ *CÓDIGOS QUE SUMAN AL OBJETIVO:*",
     ]
-    if ventas_obj.empty:
-        lineas.append("Sin códigos de venta nueva registrados.")
+
+    emoji_estado, estado, _, _, _ = estado_cumplimiento(cumplimiento, ventas_obj, objetivo)
+    lineas.append(f"{emoji_estado} Estado: *{estado}*")
+    lineas.append(mensaje_motivacional_por_estado(cumplimiento, ventas_obj, objetivo, faltan))
+    lineas.append("🎯 " + reto_sugerido(cumplimiento, ventas_obj, objetivo, faltan))
+
+    lineas += ["", "✅ *CÓDIGOS QUE CUENTAN AL OBJETIVO:*", ""]
+    if ventas_objetivo.empty:
+        lineas.append("Sin códigos objetivo registrados.")
     else:
-        for _, r in ventas_obj.iterrows():
+        for _, r in ventas_objetivo.iterrows():
             lineas.append(f"🔹 {r['Código cliente']} | {r['Cliente'] or 'S/N'} | {r['Fecha texto']}")
-    lineas += ["", "🔄 *CROSSSELLING - NO SUMA AL OBJETIVO:*"]
+
+    lineas += ["", "🔄 *CROSSSELLING - NO SUMA AL OBJETIVO:*", ""]
     if ventas_cross.empty:
         lineas.append("Sin crosselling registrado.")
     else:
         for _, r in ventas_cross.iterrows():
             lineas.append(f"🔸 {r['Código cliente']} | {r['Cliente'] or 'S/N'} | {r['Fecha texto']}")
+
     return "\n".join(lineas)
 
 
-def mensaje_codigos_objetivo(row: pd.Series, ventas_socio: pd.DataFrame) -> str:
-    ventas_obj = ventas_socio[ventas_socio["Es venta objetivo"]].copy().sort_values(["Fecha orden", "Código cliente"])
-    lineas = ["✅ *CÓDIGOS QUE SUMAN AL OBJETIVO*", "", f"👤 *{row['Socio']}*", f"EH: *{row['EH']}*", f"Total: *{len(ventas_obj)}*", ""]
+def mensaje_ranking_general(resumen: pd.DataFrame) -> str:
+    total_obj = int(resumen["Ventas objetivo"].sum()) if not resumen.empty else 0
+    total_cross = int(resumen["Crosselling"].sum()) if not resumen.empty else 0
+    total_ventas = int(resumen["Total ventas"].sum()) if not resumen.empty else 0
+    total_objetivo = int(resumen["Objetivo"].sum()) if not resumen.empty else 0
+    faltan_global = max(total_objetivo - total_obj, 0)
+    cumplimiento_global = (total_obj / total_objetivo * 100) if total_objetivo > 0 else 0
+
+    lineas = [
+        "🏆 *RANKING MOTIVACIONAL DE VENTAS*",
+        "",
+        f"✅ Ventas que cuentan al objetivo: *{total_obj}*",
+        f"🔄 Crosselling separado: *{total_cross}*",
+        f"📊 Total gestiones: *{total_ventas}*",
+        f"🎯 Objetivo global: *{total_objetivo}*",
+        f"📈 Cumplimiento global: *{cumplimiento_global:.1f}%*",
+        f"⏳ Faltan para el equipo: *{faltan_global}*",
+        "",
+        "🥇🥈🥉 *Ranking por cumplimiento:*",
+    ]
+
+    for i, (_, r) in enumerate(resumen.iterrows(), start=1):
+        icono = "🥇" if i == 1 else "🥈" if i == 2 else "🥉" if i == 3 else "🔹"
+        emoji_estado, estado, _, _, _ = estado_cumplimiento(float(r["Cumplimiento"]), int(r["Ventas objetivo"]), int(r["Objetivo"]))
+        lineas.append(
+            f"{icono} {r['EH']} - {r['Socio']}: *{int(r['Ventas objetivo'])}/{int(r['Objetivo'])}* "
+            f"({float(r['Cumplimiento']):.1f}%) | {emoji_estado} {estado} | Cross: *{int(r['Crosselling'])}* | Faltan: *{int(r['Faltan'])}*"
+        )
+
+    cercanos = resumen[(resumen["Faltan"] > 0) & (resumen["Faltan"] <= 3)] if not resumen.empty else pd.DataFrame()
+    if not cercanos.empty:
+        lineas += ["", "🔥 *Socios cerca del objetivo:*"]
+        for _, r in cercanos.iterrows():
+            lineas.append(f"➡️ {r['Socio']} está a *{int(r['Faltan'])}* venta(s) de cumplir.")
+
+    sin_avance = resumen[(resumen["Ventas objetivo"] == 0) & (resumen["Objetivo"] > 0)] if not resumen.empty else pd.DataFrame()
+    if not sin_avance.empty:
+        lineas += ["", "🚨 *Prioridad de activación:*"]
+        for _, r in sin_avance.head(5).iterrows():
+            lineas.append(f"➡️ {r['Socio']} necesita su primera venta objetivo.")
+
+    if total_objetivo > 0 and faltan_global == 0:
+        cierre = "🏆 Equipo, objetivo global cumplido. Mantengamos calidad y sigamos sumando ventas nuevas."
+    elif total_objetivo > 0 and cumplimiento_global >= 80:
+        cierre = f"🔥 Equipo, estamos cerca. Faltan {faltan_global} ventas objetivo para cerrar con fuerza."
+    else:
+        cierre = "💪 Equipo, enfoquémonos en ventas nuevas que cuentan al objetivo. Cada cierre suma."
+
+    lineas += ["", f"🎯 *Reto del día:* {cierre}"]
+    return "\n".join(lineas)
+
+
+def mensaje_todos_los_socios(resumen: pd.DataFrame, ventas: pd.DataFrame) -> str:
+    bloques = []
+    for _, row in resumen.iterrows():
+        det = ventas[ventas["EH"].astype(str) == str(row["EH"])]
+        bloques.append(mensaje_avance_socio(row, det))
+    return "\n\n------------------------------\n\n".join(bloques)
+
+
+def mensaje_solo_codigos_objetivo(row: pd.Series, ventas_socio: pd.DataFrame) -> str:
+    ventas_obj = ventas_socio[~ventas_socio["Es crosselling"]].copy().sort_values(["Fecha orden", "Código cliente"])
+    lineas = [
+        "✅ *CÓDIGOS QUE CUENTAN AL OBJETIVO*",
+        "",
+        f"👤 *{row['Socio']}*",
+        f"EH: *{row['EH']}*",
+        f"Total: *{len(ventas_obj)}*",
+        "",
+    ]
     if ventas_obj.empty:
-        lineas.append("Sin códigos de venta nueva registrados.")
+        lineas.append("Sin códigos objetivo registrados.")
     else:
         for _, r in ventas_obj.iterrows():
             lineas.append(f"🔹 {r['Código cliente']} | {r['Cliente'] or 'S/N'} | {r['Fecha texto']}")
@@ -830,174 +705,72 @@ def mensaje_codigos_objetivo(row: pd.Series, ventas_socio: pd.DataFrame) -> str:
 
 
 # =========================================================
-# RENDER VISUAL
+# STREAMLIT APP
 # =========================================================
-def barra_equipo(total_obj: int, objetivo_global: int) -> None:
-    avance = (total_obj / objetivo_global) if objetivo_global > 0 else 0
-    st.caption(f"Avance global: {total_obj}/{objetivo_global} ventas nuevas ({avance*100:.1f}%)")
-    st.progress(min(avance, 1.0))
-
-
-def render_top5(resumen: pd.DataFrame) -> None:
-    st.subheader("🏆 Top 5 socios con más ventas nuevas")
-    st.caption("Este Top 5 se ordena solo por ventas nuevas GROSSADD. No usa porcentaje de cumplimiento para definir el puesto.")
-    top = resumen.sort_values(["Ventas objetivo", "Crosselling", "Total gestiones"], ascending=[False, False, False]).head(5).reset_index(drop=True)
-    if top.empty:
-        st.info("No hay ventas para mostrar.")
-        return
-
-    st.markdown("""<div class="info-box">✅ Orden aplicado: <b>Ventas nuevas GROSSADD de mayor a menor</b>. El porcentaje y el objetivo solo se muestran como referencia.</div>""", unsafe_allow_html=True)
-    cols = st.columns(5)
-    medallas = ["🥇", "🥈", "🥉", "🏅", "🏅"]
-    colores = [
-        ("#F59E0B", "#F97316"),
-        ("#64748B", "#94A3B8"),
-        ("#B45309", "#D97706"),
-        ("#0033A0", "#2563EB"),
-        ("#0F766E", "#14B8A6"),
-    ]
-    for i, (_, r) in enumerate(top.iterrows()):
-        ventas = int(r["Ventas objetivo"])
-        objetivo = int(r["Objetivo"])
-        cumplimiento = float(r["Cumplimiento"])
-        cross = int(r["Crosselling"])
-        faltan = int(r["Faltan"])
-        c1, c2 = colores[i]
-        barra = min(max(cumplimiento, 0), 100)
-        estado = "Objetivo cumplido" if objetivo > 0 and ventas >= objetivo else f"Faltan {faltan}" if objetivo > 0 else "Sin objetivo"
-        cols[i].markdown(
-            f"""
-            <div class="top-card" style="background: linear-gradient(135deg, {c1}, {c2});">
-                <div class="rank">{medallas[i]} #{i + 1}</div>
-                <div class="name">{r['Socio']}</div>
-                <div class="eh">EH {r['EH']}</div>
-                <div class="sales">{ventas}</div>
-                <div class="sub"><b>ventas nuevas que suman al ranking</b></div>
-                <div class="mini-progress-bg"><div class="mini-progress-fill" style="width:{barra:.0f}%;"></div></div>
-                <div class="sub">🎯 Objetivo: {objetivo} | {cumplimiento:.1f}%</div>
-                <div class="sub">🔄 Crosselling: {cross}</div>
-                <div class="sub">{estado}</div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-
-
-def render_secciones(resumen: pd.DataFrame) -> None:
-    st.subheader("🎖️ Reconocimientos y recomendaciones")
-    con_obj = resumen[resumen["Objetivo"] > 0].copy()
-    c1, c2, c3 = st.columns(3)
-
-    with c1:
-        st.markdown("### 🚀 Sobrepasaron objetivo")
-        cumplidos = con_obj[con_obj["Ventas objetivo"] >= con_obj["Objetivo"]].copy()
-        if cumplidos.empty:
-            st.info("Aún no hay socios con objetivo cumplido.")
-        else:
-            cumplidos["Arriba"] = cumplidos["Ventas objetivo"] - cumplidos["Objetivo"]
-            for _, r in cumplidos.sort_values(["Arriba", "Ventas objetivo"], ascending=[False, False]).head(5).iterrows():
-                st.markdown(
-                    f"""<div class="section-card"><div class="title">🏆 {r['Socio']}</div>
-                    <div class="text">EH {r['EH']}<br>Avance: <b>{int(r['Ventas objetivo'])}/{int(r['Objetivo'])}</b> ({float(r['Cumplimiento']):.1f}%)<br>Arriba de meta: <b>{int(r['Arriba'])}</b> venta(s)</div></div>""",
-                    unsafe_allow_html=True,
-                )
-
-    with c2:
-        st.markdown("### 🔄 Más crosselling")
-        cross_top = resumen[resumen["Crosselling"] > 0].sort_values(["Crosselling", "Ventas objetivo"], ascending=[False, False]).head(5)
-        if cross_top.empty:
-            st.info("No hay crosselling registrado.")
-        else:
-            for _, r in cross_top.iterrows():
-                st.markdown(
-                    f"""<div class="section-card"><div class="title">🔄 {r['Socio']}</div>
-                    <div class="text">EH {r['EH']}<br>Crosselling: <b>{int(r['Crosselling'])}</b><br>Ventas nuevas: <b>{int(r['Ventas objetivo'])}</b></div></div>""",
-                    unsafe_allow_html=True,
-                )
-
-    with c3:
-        st.markdown("### 📌 Para cumplir objetivo")
-        pendientes = con_obj[con_obj["Faltan"] > 0].sort_values(["Faltan", "Ventas objetivo"], ascending=[True, False]).head(5)
-        if pendientes.empty:
-            st.success("Todos los socios con objetivo cargado ya cumplieron.")
-        else:
-            for _, r in pendientes.iterrows():
-                st.markdown(
-                    f"""<div class="section-card"><div class="title">🎯 {r['Socio']}</div>
-                    <div class="text">EH {r['EH']}<br>Avance: <b>{int(r['Ventas objetivo'])}/{int(r['Objetivo'])}</b> · faltan <b>{int(r['Faltan'])}</b><br>{mensaje_recomendacion(r)}</div></div>""",
-                    unsafe_allow_html=True,
-                )
-
-
-# =========================================================
-# CARGA DE DATOS
-# =========================================================
-def cargar_datos() -> tuple[pd.DataFrame, pd.DataFrame | None, pd.DataFrame]:
+def cargar_datos() -> tuple[pd.DataFrame, pd.DataFrame | None, pd.DataFrame, set[str]]:
     st.sidebar.subheader("Archivos")
-    archivo_ventas = st.sidebar.file_uploader("1) Subir base de ventas", type=["csv", "xlsx", "xls"], key="ventas_v10")
-    archivo_objetivos = st.sidebar.file_uploader("2) Subir Objetivo.xlsx", type=["xlsx", "xls", "csv"], key="objetivos_v10")
-
-    st.sidebar.subheader("Objetivo mensual")
-    objetivo_global = st.sidebar.number_input("Objetivo global del mes", min_value=0, value=400, step=1, key="objetivo_global_v10")
-    st.session_state["objetivo_global"] = int(objetivo_global)
+    archivo_ventas = st.sidebar.file_uploader("1) Subir base de ventas", type=["csv", "xlsx", "xls"], key="ventas")
+    archivo_objetivos = st.sidebar.file_uploader("2) Subir Objetivo.xlsx", type=["xlsx", "xls", "csv"], key="objetivos")
 
     st.sidebar.subheader("Crosselling")
-    st.sidebar.success("Automático por TIPO_VENTA")
-    st.sidebar.caption("GROSSADD = venta nueva y suma al objetivo. CROSS_SELLING = crosselling separado y no suma.")
+    detectar_cross_tipo = st.sidebar.checkbox("Detectar CROSS_SELLING por TIPO_VENTA", value=True, key="detectar_cross_tipo")
+    with st.sidebar.expander("Configurar crosselling", expanded=True):
+        st.caption("El crosselling aparece en el reporte, pero NO suma al objetivo de ventas nuevas.")
+        texto_cross = st.text_area("Pegar códigos crosselling", height=100, key="texto_cross_manual", placeholder="2671233\n2674567")
+        archivo_cross = st.file_uploader("Subir archivo con códigos crosselling", type=["csv", "xlsx", "xls"], key="archivo_cross_manual")
+        codigo_cross_desde = st.text_input("Desde este código considerar crosselling", key="codigo_cross_desde", placeholder="Ej.: 2680000")
+        st.caption("Úsalo solo si desde cierto código en adelante todos deben tratarse como crosselling.")
+
+    codigos_cross = extraer_codigos_de_texto(texto_cross) | extraer_codigos_de_archivo(archivo_cross)
+    if codigos_cross:
+        st.sidebar.success(f"Códigos crosselling manuales: {len(codigos_cross)}")
+    if limpiar_codigo(codigo_cross_desde):
+        st.sidebar.info(f"Crosselling desde código: {limpiar_codigo(codigo_cross_desde)}")
 
     if archivo_ventas is None:
         st.info("Sube primero la base de ventas.")
-        return pd.DataFrame(), None, pd.DataFrame()
+        return pd.DataFrame(), None, pd.DataFrame(), codigos_cross
 
     try:
-        raw_ventas = leer_archivo(archivo_ventas)
-        ventas, columnas = preparar_ventas(raw_ventas)
+        df_ventas_raw = leer_archivo(archivo_ventas)
+        ventas, columnas_ventas = preparar_ventas(
+            df_ventas_raw,
+            codigos_cross_manual=codigos_cross,
+            detectar_cross_por_tipo=detectar_cross_tipo,
+            codigo_cross_desde=codigo_cross_desde,
+        )
     except Exception as e:
         st.error(f"No se pudo leer la base de ventas: {e}")
-        return pd.DataFrame(), None, pd.DataFrame()
+        return pd.DataFrame(), None, pd.DataFrame(), codigos_cross
 
     objetivos = None
     if archivo_objetivos is not None:
         try:
-            raw_obj = leer_archivo(archivo_objetivos)
-            obj_norm = normalizar_dataframe(raw_obj)
-            candidatos = columnas_objetivo_candidatas(obj_norm, int(objetivo_global))
-            opciones = ["AUTOMATICO"] + [c[0] for c in candidatos]
-            etiquetas = {
-                "AUTOMATICO": "Automático recomendado",
-                **{c: f"{c}  | suma aproximada: {s}" for c, s, _ in candidatos},
-            }
-            seleccion = st.sidebar.selectbox(
+            df_obj_raw = leer_archivo(archivo_objetivos)
+            df_obj_norm = normalizar_dataframe(df_obj_raw)
+            col_default = detectar_columna_objetivo(df_obj_norm)
+            columnas_objetivo = list(df_obj_norm.columns)
+            col_sel = st.sidebar.selectbox(
                 "Columna de objetivo",
-                opciones,
-                index=0,
-                format_func=lambda x: etiquetas.get(x, x),
-                key="col_objetivo_v10",
+                columnas_objetivo,
+                index=columnas_objetivo.index(col_default) if col_default in columnas_objetivo else 0,
+                key="col_objetivo",
             )
-            objetivos = procesar_objetivos(raw_obj, None if seleccion == "AUTOMATICO" else seleccion, int(objetivo_global))
-            suma_obj = int(objetivos["Objetivo"].sum()) if not objetivos.empty else 0
-            col_usada = objetivos.attrs.get("columna_objetivo_usada", "")
-            st.sidebar.metric("Suma objetivos socios", suma_obj)
-            st.sidebar.caption(f"Columna usada: {col_usada}")
-            if suma_obj != int(objetivo_global):
-                st.sidebar.warning(f"La suma individual ({suma_obj}) no coincide con el objetivo global ({int(objetivo_global)}). Puedes revisar la columna seleccionada.")
+            objetivos = procesar_objetivos(df_obj_raw, col_sel)
         except Exception as e:
             st.sidebar.error(f"No se pudo leer Objetivo.xlsx: {e}")
             objetivos = None
 
     resumen = calcular_resumen(ventas, objetivos)
-    return ventas, objetivos, resumen
+    return ventas, objetivos, resumen, codigos_cross
 
 
-# =========================================================
-# PANTALLAS
-# =========================================================
 def mostrar_dashboard(ventas: pd.DataFrame, resumen: pd.DataFrame) -> None:
     st.markdown(
         """
         <div class="hero-box">
-            <h1>🏆 Ranking de Ventas - Top 5</h1>
-            <p>Top 5 por cantidad de ventas nuevas GROSSADD. El primer lugar es quien más ventas hizo; el crosselling queda separado.</p>
+            <h1>📊 Ranking motivacional</h1>
+            <p>Ventas objetivo separadas de crosselling, podio, semáforo y retos para activar al equipo.</p>
         </div>
         """,
         unsafe_allow_html=True,
@@ -1007,137 +780,118 @@ def mostrar_dashboard(ventas: pd.DataFrame, resumen: pd.DataFrame) -> None:
 
     total_obj = int(resumen["Ventas objetivo"].sum())
     total_cross = int(resumen["Crosselling"].sum())
-    total_gest = int(resumen["Total gestiones"].sum())
-    objetivo_global = int(st.session_state.get("objetivo_global", 400))
-    faltan = max(objetivo_global - total_obj, 0)
-    cumplimiento = (total_obj / objetivo_global * 100) if objetivo_global > 0 else 0
-    suma_individual = int(resumen["Objetivo"].sum())
+    total_ventas = int(resumen["Total ventas"].sum())
+    total_objetivo = int(resumen["Objetivo"].sum())
+    faltan_global = max(total_objetivo - total_obj, 0)
+    cumplimiento = (total_obj / total_objetivo * 100) if total_objetivo > 0 else 0
 
     c1, c2, c3, c4, c5 = st.columns(5)
     with c1:
-        tarjeta_metric("✅ Ventas nuevas", total_obj, "GROSSADD - sí suma", "#16A34A", "#22C55E")
+        tarjeta_metric("✅ Ventas objetivo", total_obj, "Sí suman al objetivo", "#16A34A", "#22C55E")
     with c2:
         tarjeta_metric("🔄 Crosselling", total_cross, "Separado, no suma", "#7C3AED", "#A855F7")
     with c3:
-        tarjeta_metric("📊 Total gestiones", total_gest, "Ventas + crosselling", "#0EA5E9", "#38BDF8")
+        tarjeta_metric("📊 Total gestiones", total_ventas, "Objetivo + crosselling", "#0EA5E9", "#38BDF8")
     with c4:
-        tarjeta_metric("🎯 Objetivo global", objetivo_global, f"Faltan {faltan}", "#F97316", "#FB923C")
+        tarjeta_metric("🎯 Objetivo", total_objetivo, f"Faltan {faltan_global}", "#F97316", "#FB923C")
     with c5:
         tarjeta_metric("📈 Cumplimiento", f"{cumplimiento:.1f}%", "Avance global", "#0033A0", "#2563EB")
 
-    barra_equipo(total_obj, objetivo_global)
-
-    if suma_individual and suma_individual != objetivo_global:
-        st.markdown(
-            f"""<div class="alert-box">⚠️ La suma de objetivos individuales cargada es <b>{suma_individual}</b>, pero el objetivo global está configurado en <b>{objetivo_global}</b>. El ranking por ventas no cambia; revisa la columna de objetivo seleccionada si necesitas que también cuadre por socio.</div>""",
-            unsafe_allow_html=True,
-        )
-    else:
-        st.markdown(
-            """<div class="info-box">✅ Crosselling automático desde TIPO_VENTA. No se necesita código referencial ni archivo adicional.</div>""",
-            unsafe_allow_html=True,
-        )
-
-    with st.expander("🔎 Control de conteo", expanded=False):
-        conteo_tipo = ventas.groupby("Tipo venta", as_index=False).agg(Cantidad=("Código cliente", "count"))
-        st.dataframe(conteo_tipo, use_container_width=True, hide_index=True)
-        st.caption("Regla aplicada: GROSSADD suma al ranking y al objetivo. CROSS_SELLING queda separado.")
-
-    render_top5(resumen)
-    render_secciones(resumen)
-
-    st.subheader("📲 Envío rápido por WhatsApp")
-    w1, w2, w3, w4 = st.columns(4)
-    with w1:
-        st.markdown(f"[🏆 Ranking Top 5]({whatsapp_link(mensaje_ranking(resumen))})")
-    with w2:
-        st.markdown(f"[🚀 Meta superada]({whatsapp_link(mensaje_meta_superada(resumen))})")
-    with w3:
-        st.markdown(f"[🔄 Top crosselling]({whatsapp_link(mensaje_top_cross(resumen))})")
-    with w4:
-        st.markdown(f"[📌 Por cumplir]({whatsapp_link(mensaje_pendientes(resumen))})")
+    render_barra_equipo(total_obj, total_objetivo)
+    render_reto_equipo(resumen)
+    render_podio(resumen)
+    render_insignias(resumen)
 
     st.subheader("📋 Ranking completo por socio")
-    ranking = resumen_visual(resumen)
-    columnas = ["Puesto", "EH", "Socio", "Ventas objetivo", "Crosselling", "Total gestiones", "Objetivo", "Cumplimiento", "Faltan", "Estado"]
-    st.dataframe(ranking[columnas].style.apply(color_fila, axis=1), use_container_width=True, hide_index=True)
+    st.caption("Ordenado por cumplimiento. El crosselling se muestra separado y no suma al objetivo.")
+    ranking_visual = agregar_columnas_visuales(resumen)
+    columnas_ranking = [
+        "Puesto", "Estado", "EH", "Socio", "Avance", "Ventas objetivo", "Crosselling",
+        "Total ventas", "Objetivo", "Cumplimiento", "Faltan", "Motivación", "Reto sugerido"
+    ]
+    st.dataframe(
+        ranking_visual[columnas_ranking].style.apply(color_fila_ranking, axis=1),
+        use_container_width=True,
+        hide_index=True,
+    )
+
+    st.subheader("🔄 Resumen crosselling")
+    cross = ventas[ventas["Es crosselling"]].copy()
+    if cross.empty:
+        st.info("No se detectó crosselling con la configuración actual.")
+    else:
+        cross_resumen = cross.groupby(["EH", "Socio"], as_index=False).agg(
+            Crosselling=("Código cliente", "count")
+        ).sort_values("Crosselling", ascending=False)
+        st.dataframe(cross_resumen, use_container_width=True, hide_index=True)
+        with st.expander("Ver detalle de crosselling", expanded=False):
+            st.dataframe(
+                cross[["Código cliente", "EH", "Socio", "Tipo venta", "Nodo", "Fecha texto", "Cliente", "Motivo crosselling"]],
+                use_container_width=True,
+                hide_index=True,
+            )
 
     with st.expander("Detalle completo de ventas", expanded=False):
         st.dataframe(ventas, use_container_width=True, hide_index=True)
 
-    excel = excel_presentacion_bytes(ventas, resumen)
+    excel = excel_bytes({"Ranking": ranking_visual, "Detalle ventas": ventas, "Crosselling": cross})
     st.download_button(
-        "⬇️ Descargar reporte ordenado para presentación",
+        "⬇️ Descargar Excel",
         excel,
-        file_name=f"reporte_ventas_presentacion_{hoy_bolivia().strftime('%Y%m%d')}.xlsx",
+        file_name=f"ranking_motivacional_{hoy_bolivia().strftime('%Y%m%d')}.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     )
 
 
 def mostrar_whatsapp(ventas: pd.DataFrame, resumen: pd.DataFrame) -> None:
-    st.title("📲 WhatsApp - Ventas")
+    st.title("📲 WhatsApp - Avance de ventas")
     if ventas.empty:
         return
 
     tipo = st.selectbox(
         "Tipo de mensaje",
-        ["Ranking Top 5", "Avance por socio", "Socios por cumplir", "Socios con meta superada", "Top crosselling", "Solo códigos objetivo"],
-        key="tipo_mensaje_v10",
+        ["Avance por socio", "Ranking motivacional", "Ranking general", "Todos los socios separados", "Solo códigos objetivo"],
+        key="tipo_mensaje",
     )
 
     detalle = pd.DataFrame()
-    prefijo = tipo
+    prefijo_key = tipo
 
     if tipo in {"Avance por socio", "Solo códigos objetivo"}:
         opciones = [f"{r['EH']} - {r['Socio']}" for _, r in resumen.iterrows()]
-        seleccion = st.selectbox("Seleccionar socio", opciones, key=f"sel_socio_v10_{tipo}")
+        seleccion = st.selectbox("Seleccionar socio", opciones, key=f"sel_socio_{tipo}")
         eh = seleccion.split(" - ")[0]
         row = resumen[resumen["EH"].astype(str) == eh].iloc[0]
         detalle = ventas[ventas["EH"].astype(str) == eh].copy()
-        texto = mensaje_avance_socio(row, detalle) if tipo == "Avance por socio" else mensaje_codigos_objetivo(row, detalle)
-        prefijo = f"{tipo}_{eh}_{int(row['Ventas objetivo'])}_{int(row['Crosselling'])}"
-    elif tipo == "Ranking Top 5":
-        texto = mensaje_ranking(resumen)
-        detalle = resumen_visual(resumen).head(5)
-    elif tipo == "Socios por cumplir":
-        texto = mensaje_pendientes(resumen)
-        detalle = resumen[(resumen["Objetivo"] > 0) & (resumen["Faltan"] > 0)].copy()
-    elif tipo == "Socios con meta superada":
-        texto = mensaje_meta_superada(resumen)
-        detalle = resumen[(resumen["Objetivo"] > 0) & (resumen["Ventas objetivo"] >= resumen["Objetivo"])].copy()
+        prefijo_key = f"{tipo}_{eh}_{int(row['Ventas objetivo'])}_{int(row['Crosselling'])}_{int(row['Total ventas'])}"
+
+        if tipo == "Avance por socio":
+            texto = mensaje_avance_socio(row, detalle)
+        else:
+            texto = mensaje_solo_codigos_objetivo(row, detalle)
+
+    elif tipo in {"Ranking general", "Ranking motivacional"}:
+        texto = mensaje_ranking_general(resumen)
+        detalle = agregar_columnas_visuales(resumen)
+        prefijo_key = f"ranking_{tipo}_{len(resumen)}_{int(resumen['Ventas objetivo'].sum())}_{int(resumen['Crosselling'].sum())}"
+
     else:
-        texto = mensaje_top_cross(resumen)
-        detalle = resumen[resumen["Crosselling"] > 0].sort_values(["Crosselling", "Ventas objetivo"], ascending=[False, False]).copy()
+        texto = mensaje_todos_los_socios(resumen, ventas)
+        detalle = resumen.copy()
+        prefijo_key = f"todos_{len(resumen)}_{int(resumen['Ventas objetivo'].sum())}_{int(resumen['Crosselling'].sum())}"
 
     st.subheader("Mensaje WhatsApp")
-    st.text_area("Copiar mensaje", value=texto, height=430, key=key_mensaje(prefijo, texto))
+    st.text_area("Copiar mensaje", value=texto, height=430, key=key_mensaje(prefijo_key, texto))
     st.markdown(f"[📲 Enviar por WhatsApp]({whatsapp_link(texto)})")
 
+    # El detalle va debajo del mensaje para no distraer del texto a copiar.
+    st.subheader("Ventas / detalle del socio")
     if tipo in {"Avance por socio", "Solo códigos objetivo"}:
-        st.download_button(
-            "⬇️ Descargar ventas del socio ordenadas",
-            excel_presentacion_bytes(ventas, resumen, filtro_eh=eh),
-            file_name=f"ventas_socio_{eh}_{hoy_bolivia().strftime('%Y%m%d')}.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        st.dataframe(
+            detalle[["Código cliente", "EH", "Socio", "Tipo venta", "Nodo", "Fecha texto", "Cliente", "Es crosselling", "Motivo crosselling"]],
+            use_container_width=True,
+            hide_index=True,
         )
-    else:
-        st.download_button(
-            "⬇️ Descargar reporte general ordenado",
-            excel_presentacion_bytes(ventas, resumen),
-            file_name=f"reporte_ventas_presentacion_{hoy_bolivia().strftime('%Y%m%d')}.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        )
-
-    st.subheader("Detalle")
-    if tipo in {"Avance por socio", "Solo códigos objetivo"}:
-        if detalle.empty:
-            st.info("Este socio no tiene ventas registradas en la base cargada.")
-        else:
-            st.dataframe(
-                detalle[["Código cliente", "EH", "Socio", "Tipo venta", "Nodo", "Fecha texto", "Cliente", "Es venta objetivo", "Es crosselling"]],
-                use_container_width=True,
-                hide_index=True,
-            )
     else:
         st.dataframe(detalle, use_container_width=True, hide_index=True)
 
@@ -1146,43 +900,48 @@ def mostrar_inicio() -> None:
     st.markdown(
         """
         <div class="hero-box">
-            <h1>📲 WhatsApp Objetivos Tigo V10</h1>
-            <p>Dashboard Top 5 por ventas nuevas, crosselling separado y reportes ordenados para presentación.</p>
+            <h1>📲 WhatsApp Objetivos Tigo V4</h1>
+            <p>Ranking motivacional con podio, colores, semáforo, retos y mensajes para tus socios.</p>
             <hr style="border: 1px solid rgba(255,255,255,.25);">
-            <p>👷 Seguimiento comercial diario</p>
+            <p>👷 Desarrollado para seguimiento comercial diario</p>
         </div>
         """,
         unsafe_allow_html=True,
     )
-    st.info("Sube la base GROSSADD y Objetivo.xlsx desde el panel lateral.")
+    st.info("Sube la base de ventas y el archivo Objetivo.xlsx desde el panel lateral.")
     st.markdown(
         """
         ### Flujo recomendado
         1. Sube la base **GROSSADD**.
         2. Sube **Objetivo.xlsx**.
-        3. Revisa **Dashboard** para ver el **Top 5 por ventas nuevas**.
-        4. Usa **WhatsApp** para enviar ranking, recomendaciones y seguimiento por socio.
+        3. Revisa **Dashboard** para ver podio, semáforo y ranking.
+        4. Entra a **WhatsApp** y usa **Ranking motivacional** para el grupo.
+        5. Usa **Avance por socio** para enviar mensajes individuales con reto sugerido.
 
-        ### Regla de conteo
-        - **TIPO_VENTA = GROSSADD** → venta nueva, suma al ranking y al objetivo.
-        - **TIPO_VENTA = CROSS_SELLING** → crosselling, se muestra separado y no suma.
+        ### Nuevas mejoras V4
+        - 🏆 Podio Top 3.
+        - 🟢🟡🟠🔴 Semáforo por cumplimiento.
+        - 🎯 Reto del día para el equipo.
+        - 🎖️ Reconocimientos: líder, socio cerca del objetivo, socio impulso y mayor crosselling.
+        - 📲 Mensajes WhatsApp más motivadores.
+        - 🔄 Crosselling visible, pero separado del objetivo.
         """
     )
 
 
 def main() -> None:
-    st.set_page_config(page_title="WhatsApp Objetivos Tigo V10", page_icon="📲", layout="wide")
+    st.set_page_config(page_title="WhatsApp Objetivos Tigo", page_icon="📲", layout="wide")
     aplicar_estilos()
-    st.sidebar.title("📲 WhatsApp Objetivos V10")
-    modulo = st.sidebar.radio("Módulo", ["Inicio", "Dashboard", "WhatsApp"], key="menu_v10")
+    st.sidebar.title("📲 WhatsApp Objetivos")
+    modulo = st.sidebar.radio("Módulo", ["Inicio", "Dashboard", "WhatsApp"], key="menu")
 
-    ventas, objetivos, resumen = cargar_datos()
+    ventas, objetivos, resumen, codigos_cross = cargar_datos()
 
     if objetivos is None:
-        st.sidebar.warning("Objetivos no cargados. El ranking por ventas funciona, pero el cumplimiento por socio quedará en 0.")
+        st.sidebar.warning("Objetivos no cargados. El cumplimiento saldrá en 0 hasta subir Objetivo.xlsx.")
 
     if not ventas.empty:
-        st.sidebar.metric("Ventas nuevas", int(ventas["Es venta objetivo"].sum()))
+        st.sidebar.metric("Ventas objetivo", int((~ventas["Es crosselling"]).sum()))
         st.sidebar.metric("Crosselling", int(ventas["Es crosselling"].sum()))
 
     if modulo == "Inicio":
